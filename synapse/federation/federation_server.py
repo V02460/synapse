@@ -1483,9 +1483,7 @@ class FederationServer(FederationBase):
         ):
             raise AuthError(code=403, msg="Server is banned from room")
 
-    async def on_user_directory_fetch_request(
-        self, origin: str
-    ) -> tuple[int, JsonMapping]:
+    async def on_user_directory_fetch_request(self) -> tuple[int, JsonMapping]:
         """Handle a user directory request from a remote server.
 
         Returns every searchable local user, since the federation endpoint
@@ -1497,7 +1495,8 @@ class FederationServer(FederationBase):
         Returns:
             A tuple of (response code, response json)
         """
-        return 200, await self._fetch_all_users()
+        user_dir_page = await self.store.get_users_in_user_dir_paginated(start, 1000)
+        return 200, TypeAdapter(user_dir_page).model_dump("json", exclude_none=True)
 
     async def _fetch_all_users(self) -> JsonDict:
         """Return all of this server's own users from the user directory.

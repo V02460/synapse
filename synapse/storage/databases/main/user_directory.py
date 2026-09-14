@@ -884,6 +884,9 @@ class SearchResult(TypedDict):
     limited: bool
     results: list[UserProfile]
 
+class UserDirPage(BaseModel):
+    next: str | None
+    results: list[UserProfile]
 
 class UserDirectoryStore(UserDirectoryBackgroundUpdateStore):
     # How many records do we calculate before sending it to
@@ -938,6 +941,8 @@ class UserDirectoryStore(UserDirectoryBackgroundUpdateStore):
         self,
         homeserver: str,
         users: Sequence[tuple[str, str | None, str | None]],
+        start: str,
+        end: str,
     ) -> None:
         """Reconcile the set of remote users made visible via federated search
         for a single remote homeserver.
@@ -952,6 +957,9 @@ class UserDirectoryStore(UserDirectoryBackgroundUpdateStore):
         for ``homeserver`` -- passing a partial set (e.g. after a failed sync)
         would incorrectly prune still-valid users.
         """
+
+        "DELETE FROM users_in_federated_search WHERE user_id BETWEEN start AND end"
+        "INSERT INTO users_in_federated_search WHERE user_id BETWEEN start AND end"
 
         profiles = [
             _UserDirProfile(user_id, display_name, avatar_url)
@@ -1284,7 +1292,9 @@ class UserDirectoryStore(UserDirectoryBackgroundUpdateStore):
             ],
         }
 
-    async def get_users_in_user_dir(self) -> SearchResult:
+    async def get_users_in_user_dir_paginated(
+        self, start: str | None = None, limit: int = 1000
+    ) -> list[UserDirPage]:
         """Get every user stored in the user directory.
 
         Unlike `search_user_dir`, this does not match a search term: it
@@ -1308,13 +1318,18 @@ class UserDirectoryStore(UserDirectoryBackgroundUpdateStore):
         """
         rows = cast(
             list[tuple[str, str | None, str | None]],
-            await self.db_pool.simple_select_list(
+            await self.db_pool.runInteraction(
+                "simple_select_list_keyset_paginate_txn",
+                self.simple_select_list_keyset_paginate_txn,
                 table="user_directory",
-                keyvalues=None,
+                start=start,
+                limit=limit,
                 retcols=("user_id", "display_name", "avatar_url"),
-                desc="get_users_in_user_dir",
+                db_autocommit=True,
             ),
         )
+
+        MyModel.model_validate
 
         results: list[UserProfile] = [
             {
@@ -1325,7 +1340,10 @@ class UserDirectoryStore(UserDirectoryBackgroundUpdateStore):
             for user_id, display_name, avatar_url in rows
         ]
 
-        return {"limited": False, "results": results}
+        return {
+            "results": results,
+            "next": results[-1].get("user_id") if results else None,
+        }
 
 
 def _filter_text_for_index(text: str) -> str:

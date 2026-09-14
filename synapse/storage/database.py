@@ -2621,6 +2621,83 @@ class DatabasePool:
 
         return txn.fetchall()
 
+    class PageResult(TypedDict):
+        start: str
+        end: str
+        results: list[tuple[Any, ...]]
+
+    @classmethod
+    def simple_select_list_keyset_paginate_txn(
+        cls,
+        txn: LoggingTransaction,
+        table: str,
+        orderby: str,
+        start: str,
+        limit: int,
+        retcols: Iterable[str],
+        filters: dict[str, Any] | None = None,
+        keyvalues: dict[str, Any] | None = None,
+        exclude_keyvalues: dict[str, Any] | None = None,
+        order_direction: Literal["ASC", "DESC"] = "ASC",
+    ) -> list[tuple[Any, ...]]:
+        """
+        Executes a SELECT query on the named table with start and limit,
+        of row numbers, which may return zero or number of rows from start to limit,
+        returning the result as a list of dicts.
+
+        Use `filters` to search attributes using SQL wildcards and/or `keyvalues` to
+        select attributes with exact matches. All constraints are joined together
+        using 'AND'.
+
+        Args:
+            txn: Transaction object
+            table: the table name
+            orderby: Column to order the results by.
+            start: Key to begin the query at.
+            limit: Number of results to return.
+            retcols: the names of the columns to return
+            filters:
+                column names and values to filter the rows with, or None to not
+                apply a WHERE ? LIKE ? clause.
+            keyvalues:
+                column names and values to select the rows with, or None to not
+                apply a WHERE key = value clause.
+            exclude_keyvalues:
+                column names and values to exclude rows with, or None to not
+                apply a WHERE key != value clause.
+            order_direction: Whether the results should be ordered "ASC" or "DESC".
+
+        Returns:
+            The result as a list of tuples.
+        """
+        clauses = []
+        arg_list: list[Any] = []
+        if start:
+            clauses += ["%s > ?" % (orderby,)]
+            arg_list += [start]
+        if filters:
+            clauses += ["%s LIKE ?" % (k,) for k in filters]
+            arg_list += list(filters.values())
+        if keyvalues:
+            clauses += ["%s = ?" % (k,) for k in keyvalues]
+            arg_list += list(keyvalues.values())
+        if exclude_keyvalues:
+            clauses += ["%s != ?" % (k,) for k in exclude_keyvalues]
+            arg_list += list(exclude_keyvalues.values())
+
+        where_clause = "WHERE " + " AND ".join(clauses) if clauses else ""
+
+        sql = "SELECT %s FROM %s %s ORDER BY %s %s LIMIT ?" % (
+            ", ".join(retcols),
+            table,
+            where_clause,
+            orderby,
+            order_direction,
+        )
+        txn.execute(sql, arg_list + [limit])
+
+        return txn.fetchall()
+
 
 def make_in_list_sql_clause(
     database_engine: BaseDatabaseEngine,

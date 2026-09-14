@@ -929,11 +929,12 @@ class FederationUserDirectoryFetchServlet(BaseFederationServerServlet):
 
     async def on_GET(
         self,
-        origin: str,
+        _origin: str,
         content: Literal[None],
         query: dict[bytes, list[bytes]],
     ) -> tuple[int, JsonMapping]:
-        return await self.handler.on_user_directory_fetch_request(origin)
+        start = str(query[b"start"][0])
+        return await self.handler.on_user_directory_fetch_request(origin, start)
 
 
 FEDERATION_SERVLET_CLASSES: tuple[type[BaseFederationServlet], ...] = (

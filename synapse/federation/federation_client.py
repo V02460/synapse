@@ -1925,8 +1925,9 @@ class FederationClient(FederationBase):
         self,
         destination: str,
         timeout: int,
+        next_token: int | None,
     ) -> JsonDict:
-        """Fetch the full user directory of a remote server.
+        """Fetch the user directory of a remote server.
 
         Args:
             destination: The server to query.
@@ -1939,7 +1940,9 @@ class FederationClient(FederationBase):
             HttpResponseException: The remote server returned an HTTP error.
             RequestSendFailed: The request to the remote server failed.
         """
-        return await self.transport_layer.user_directory_fetch(destination, timeout)
+        return await self.transport_layer.user_directory_fetch(
+            destination, timeout, next_token
+        )
 
     async def federation_download_media(
         self,

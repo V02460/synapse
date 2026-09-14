@@ -19,6 +19,7 @@
 #
 #
 
+import asyncio
 import logging
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Optional, Sequence
@@ -892,26 +893,43 @@ class UserDirectoryHandler(StateDeltasHandler):
 
         total_reconciled = 0
 
-        for destination in destinations:
-            if destination == self.server_name:
-                continue
+        async def sync_destination_inner(destination: str):
+            async with asyncio.TaskGroup() as tg:
+                start = None
+                while True:
+                    response = await self._federation_client.user_directory_fetch(
+                        destination,
+                        self._federated_user_directory_fetch_timeout,
+                        start,
+                    )
+                    if response.next_token <= start:
+                        raise ValueError("Invalid next_token")
 
+                    entries = self._parse_remote_user_directory_results(
+                        response, destination
+                    )
+                    total_reconciled += len(entries)
+                    tg.create_task(
+                        self.reconcile_remote_users(
+                            destination, entries, start=start, end=response.next_token
+                        )
+                    )
+
+                    if not response.next_token:
+                        break
+
+                    start = response.next_token
+
+        async def sync_destination(destination: str):
             try:
-                response = await self._federation_client.user_directory_fetch(
-                    destination,
-                    self._federated_user_directory_fetch_timeout,
-                )
-                entries = self._parse_remote_user_directory_results(
-                    response, destination
-                )
-            except RequestSendFailed as e:
+                await sync_destination_inner(destination)
+            except* RequestSendFailed as e:
                 logger.warning(
                     "Failed to fetch federated user directory [destination=%s]: %s",
                     destination,
                     e,
                 )
-                continue
-            except HttpResponseException as e:
+            except* HttpResponseException as e:
                 if e.code == HTTPStatus.NOT_FOUND or is_unknown_endpoint(e):
                     logger.info(
                         "Federated user directory is unsupported or disabled "
@@ -926,24 +944,24 @@ class UserDirectoryHandler(StateDeltasHandler):
                         e.code,
                         e,
                     )
-                continue
-            except ValidationError as e:
+            except* ValidationError as e:
                 logger.warning(
                     "Invalid federated user directory response [destination=%s]: %s",
                     destination,
                     e,
                 )
-                continue
-            except Exception:
+            except* Exception:
                 logger.exception(
                     "Unexpected error fetching or validating federated user "
                     "directory [destination=%s]",
                     destination,
                 )
-                continue
 
-            await self.reconcile_remote_users(destination, entries)
-            total_reconciled += len(entries)
+        async with asyncio.TaskGroup() as tg:
+            for destination in destinations:
+                if destination == self.server_name:
+                    continue
+                tg.create_task(sync_destination(destination))
 
         logger.debug(
             "Federated user directory sync reconciled %d remote users",
@@ -973,16 +991,20 @@ class UserDirectoryHandler(StateDeltasHandler):
             return
 
         await self.store.upsert_federated_remote_users(profiles)
+
     async def reconcile_remote_users(
-        self, homeserver: str, users: Sequence[RemoteUserDirectoryEntry]
+        self,
+        homeserver: str,
+        users: Sequence[RemoteUserDirectoryEntry],
+        start: str,
+        end: str | None,
     ) -> None:
         """Reconcile the remote users made visible via federated search for a
         single remote homeserver.
 
         Unlike :meth:`upsert_remote_users`, this also prunes users that were
         previously visible for ``homeserver`` but are absent from ``users``.
-        It must therefore only be called with the full result set of a
-        successful sync for that homeserver.
+        Will only replace the interval [``start``, ``end``).
         """
         if not self.update_user_directory:
             # Only the worker that owns the user directory should write to it.
@@ -1013,4 +1035,6 @@ class UserDirectoryHandler(StateDeltasHandler):
 
             profiles.append((entry.user_id, entry.display_name, entry.avatar_url))
 
-        await self.store.reconcile_federated_remote_users(homeserver, profiles)
+        await self.store.reconcile_federated_remote_users(
+            homeserver, profiles, start, end
+        )

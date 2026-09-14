@@ -857,6 +857,7 @@ class TransportLayerClient:
         self,
         destination: str,
         timeout: int,
+        next_token: str,
     ) -> JsonDict:
         """
         Fetch users from the user directory of a remote server.
@@ -879,6 +880,7 @@ class TransportLayerClient:
         return await self.client.get_json(
             destination,
             path=path,
+            args={"next_token": next_token},
             # Ignore backoff because this fetch uses a small, dedicated timeout.
             ignore_backoff=True,
             timeout=timeout,
